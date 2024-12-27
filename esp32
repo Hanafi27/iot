@@ -1,0 +1,187 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <DHT.h>
+#include <WiFi.h>
+#include <FirebaseESP32.h>
+#include <time.h>
+#include <SD.h>
+
+// OLED display width and height
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+
+// Declaration for an SSD1306 display connected to I2C (SDA=21, SCL=22)
+#define OLED_RESET -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+#define FIREBASE_HOST "dbiotmicroservice-default-rtdb.asia-southeast1.firebasedatabase.app"
+#define FIREBASE_API_KEY "AIzaSyCQFcN2sUEdHhXWTb1Y-n0UjU42NAJ9zUA"
+#define WIFI_SSID "Hanafi"
+#define WIFI_PASSWORD "1sampai2"
+#define FIREBASE_EMAIL "risetsdanielits@gmail.com"
+#define FIREBASE_PASSWORD "Ri53tsuks3s!"
+
+#define PHPIN 2
+#define DHTPIN 4
+#define DHTTYPE DHT22
+#define MOISTURE_PIN 33
+#define MOISTURE_PIN2 32
+#define MOISTURE_PIN3 35
+#define MOISTURE_PIN4 17 // Digital
+#define RAIN_SENSOR_PIN 27
+#define LDR_PIN 34 
+
+const float GAMMA = 0.7;
+const float RL10 = 33;
+
+DHT dht(DHTPIN, DHTTYPE);
+FirebaseData firebaseData;
+FirebaseConfig firebaseConfig;
+FirebaseAuth firebaseAuth;
+
+float readSoilPH() {
+  int sensorValue = analogRead(PHPIN);
+  float hasil = (-0.0139 * sensorValue) + 7.851;
+  float randomVariation = random(-3, 4) / 10.0;
+  hasil += randomVariation;
+  hasil = constrain(hasil, 1.0, 14.0);
+  return hasil;
+}
+
+void connectToWiFi() {
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.print(".");
+  }
+  Serial.println("Connected to WiFi");
+}
+
+void configureTime() {
+  configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+}
+
+String getTime() {
+  struct tm timeInfo;
+  if (!getLocalTime(&timeInfo)) {
+    return "00:00";
+  }
+  char buffer[6];
+  strftime(buffer, sizeof(buffer), "%H:%M", &timeInfo);
+  return String(buffer);
+}
+
+float convertAnalogToLux(int analogValue) {
+  float voltage = analogValue * (3.3 / 4095.0);
+  float resistance = 2000 * voltage / (1 - voltage / 3.3);
+  float lux = pow(RL10 * 1e3 * pow(10, GAMMA) / resistance, (1 / GAMMA));
+  return lux;
+}
+
+void setup() {
+  Serial.begin(115200);
+  connectToWiFi();
+  configureTime();
+
+  firebaseConfig.api_key = FIREBASE_API_KEY;
+  firebaseConfig.database_url = FIREBASE_HOST;
+  firebaseAuth.user.email = FIREBASE_EMAIL;
+  firebaseAuth.user.password = FIREBASE_PASSWORD;
+  Firebase.begin(&firebaseConfig, &firebaseAuth);
+
+  dht.begin();
+  pinMode(RAIN_SENSOR_PIN, INPUT_PULLUP);
+  pinMode(LDR_PIN, INPUT);
+  pinMode(MOISTURE_PIN4, INPUT); // Digital
+
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("SSD1306 allocation failed"));
+    for(;;);
+  }
+  display.display();
+  delay(2000);
+  display.clearDisplay();
+}
+
+float simulateMoistureDigital() {
+  int digitalValue = digitalRead(MOISTURE_PIN4);
+  float simulatedMoisture = digitalValue == HIGH ? random(0, 40) : random(60, 100);
+  return simulatedMoisture;
+}
+
+void updateOLED(float airTemp, float humidity, float moisture1, float soilPHValue, int luxValue, String rainSensor, String currentTime) {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+
+  display.setCursor(0,0);
+  display.print("Temp: ");
+  display.print(airTemp);
+  display.println(" C");
+
+  display.setCursor(0,10);
+  display.print("Humidity: ");
+  display.print(humidity);
+  display.println(" %");
+
+  display.setCursor(0,20);
+  display.print("Moisture1: ");
+  display.print(moisture1);
+  display.println(" %");
+
+  display.setCursor(0,30);
+  display.print("Soil pH: ");
+  display.print(soilPHValue);
+
+  display.setCursor(0,40);
+  display.print("Lux: ");
+  display.print(luxValue);
+
+  display.setCursor(0,50);
+  display.print("Rain: ");
+  display.print(rainSensor);
+
+  display.setCursor(70,50);
+  display.print("Time: ");
+  display.print(currentTime);
+
+  display.display();
+}
+
+void loop() {
+  float humidity = dht.readHumidity();
+  float airTemp = dht.readTemperature();
+
+  float moisture1 = analogRead(MOISTURE_PIN) * 100 / 4095;
+  float moisture2 = analogRead(MOISTURE_PIN2) * 100 / 4095;
+  float moisture3 = analogRead(MOISTURE_PIN3) * 100 / 4095;
+  float moisture4 = simulateMoistureDigital();
+
+  float soilPHValue = readSoilPH();
+  soilPHValue = floor(soilPHValue * 10) / 10;
+
+  String rainSensor = digitalRead(RAIN_SENSOR_PIN) == HIGH ? "No Rain" : "Rain";
+
+  int ldrAnalogValue = analogRead(LDR_PIN);
+  float luxValue = convertAnalogToLux(ldrAnalogValue);
+  int roundedLuxValue = round(luxValue);
+  roundedLuxValue = constrain(roundedLuxValue, 0, 1200);
+
+  String currentTime = getTime();
+
+  Firebase.setFloat(firebaseData, "/node2/AirSensors/AirTemperature", airTemp);
+  Firebase.setFloat(firebaseData, "/node2/AirSensors/Humidity", humidity);
+  Firebase.setFloat(firebaseData, "/node2/SoilSensors/Moisture1EP000468", moisture1);
+  Firebase.setFloat(firebaseData, "/node2/SoilSensors/Moisture2YL69", moisture2);
+  Firebase.setFloat(firebaseData, "/node2/SoilSensors/Moisture3CapasitiveV1_2", moisture3);
+  Firebase.setFloat(firebaseData, "/node2/SoilSensors/Moisture4StickADC", moisture4);
+  Firebase.setFloat(firebaseData, "/node2/SoilSensors/soilPH", soilPHValue);
+  Firebase.setString(firebaseData, "/node2/RainSensor", rainSensor);
+  Firebase.setInt(firebaseData, "/node2/LDR_Lux", roundedLuxValue);
+  Firebase.setString(firebaseData, "/node2/Time", currentTime);
+
+  updateOLED(airTemp, humidity, moisture1, soilPHValue, roundedLuxValue, rainSensor, currentTime);
+
+  delay(2000);
+}
